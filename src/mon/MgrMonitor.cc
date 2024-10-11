@@ -1025,7 +1025,8 @@ bool MgrMonitor::preprocess_command(MonOpRequestRef op)
             continue;
           // We only show the name for enabled modules.  The any errors
           // etc will show up as a health checks.
-          f->dump_string("module", p);
+          // f->dump_string("module", p);
+          p.dump(f.get());
         }
         f->close_section();
         f->open_array_section("disabled_modules");
