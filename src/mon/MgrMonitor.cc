@@ -1011,60 +1011,38 @@ bool MgrMonitor::preprocess_command(MonOpRequestRef op)
     }
     f->flush(rdata);
   } else if (prefix == "mgr module ls") {
-  if (f) {
-    // Create a map from module name to module info
-    std::map<std::string, MgrModuleInfo> module_info_map;
-    for (auto& p : map.available_modules) {
-      module_info_map[p.name] = p;
-    }
-
-    f->open_object_section("modules");
-    {
-      // Handle always_on_modules
-      f->open_array_section("always_on_modules");
-      for (const auto& module_name : map.get_always_on_modules()) {
-        auto it = module_info_map.find(module_name);
-        if (it != module_info_map.end()) {
-          it->second.dump(f.get());
-        } else {
-          // Create default info if not available
-          MgrModuleInfo info;
-          info.name = module_name;
-          info.dump(f.get());
-        }
-      }
-      f->close_section();
-
-      // Handle enabled_modules
-      f->open_array_section("enabled_modules");
-      for (const auto& module_name : map.modules) {
-        if (map.get_always_on_modules().count(module_name) > 0)
-          continue;
-        auto it = module_info_map.find(module_name);
-        if (it != module_info_map.end()) {
-          it->second.dump(f.get());
-        } else {
-          // Create default info if not available
-          MgrModuleInfo info;
-          info.name = module_name;
-          info.dump(f.get());
-        }
-      }
-      f->close_section();
-
-      // Handle disabled_modules
-      f->open_array_section("disabled_modules");
-      for (auto& p : map.available_modules) {
-        if (map.modules.count(p.name) == 0 &&
-            map.get_always_on_modules().count(p.name) == 0) {
+   } else if (prefix == "mgr module ls") {
+    if (f) {
+      f->open_object_section("modules");
+      {
+        f->open_array_section("always_on_modules");
+        for (auto& p : map.get_always_on_modules()) {
           p.dump(f.get());
         }
+        f->close_section();
+        f->open_array_section("enabled_modules");
+        for (auto& p : map.modules) {
+          if (map.get_always_on_modules().count(p) > 0)
+            continue;
+          // We only show the name for enabled modules.  The any errors
+          // etc will show up as a health checks.
+          p.dump(f.get());
+        }
+        f->close_section();
+        f->open_array_section("disabled_modules");
+        for (auto& p : map.available_modules) {
+          if (map.modules.count(p.name) == 0 &&
+            map.get_always_on_modules().count(p.name) == 0) {
+            // For disabled modules, we show the full info if the detail
+            // parameter is enabled, to give a hint about whether enabling it will work
+            p.dump(f.get());
+          }
+        }
+        f->close_section();
       }
       f->close_section();
-    }
-    f->close_section();
-    f->flush(rdata);
-  } else {
+      f->flush(rdata);
+    } else {
       TextTable tbl;
       tbl.define_column("MODULE", TextTable::LEFT, TextTable::LEFT);
       tbl.define_column("      ", TextTable::LEFT, TextTable::LEFT);
