@@ -481,6 +481,7 @@ PG::do_delete_work(ceph::os::Transaction &t, ghobject_t _next)
   auto [objs_to_rm, next] = fut.get();
   if (objs_to_rm.empty()) {
     logger().info("all objs removed, removing coll for {}", pgid);
+    t.remove(coll_ref->get_cid(), pgid.make_snapmapper_oid());
     t.remove(coll_ref->get_cid(), pgmeta_oid);
     t.remove_collection(coll_ref->get_cid());
     (void) shard_services.get_store().do_transaction(
@@ -490,7 +491,7 @@ PG::do_delete_work(ceph::os::Transaction &t, ghobject_t _next)
     return {next, false};
   } else {
     for (auto &obj : objs_to_rm) {
-      if (obj == pgmeta_oid) {
+      if (obj == pgmeta_oid || obj.is_internal_pg_local()) {
         continue;
       }
       logger().trace("pg {}, removing obj {}", pgid, obj);
@@ -517,7 +518,8 @@ Context *PG::on_clean()
 {
   recovery_handler->on_pg_clean();
   scrubber.on_primary_active_clean();
-  return nullptr;
+  recovery_finisher = new C_PG_FinishRecovery(*this);
+  return recovery_finisher;
 }
 
 seastar::future<> PG::clear_temp_objects()
@@ -1884,5 +1886,20 @@ void PG::cancel_pglog_based_recovery_op() {
   ceph_assert(pglog_based_recovery_op);
   pglog_based_recovery_op->cancel();
   reset_pglog_based_recovery_op();
+}
+
+void PG::C_PG_FinishRecovery::finish(int r) {
+  LOG_PREFIX(PG::C_PG_FinishRecovery::finish);
+  auto &peering_state = pg.get_peering_state();
+  if (peering_state.is_deleting() || !peering_state.is_clean()) {
+    DEBUGDPP("raced with delete or repair", pg);
+    return;
+  }
+  if (this == pg.recovery_finisher) {
+    peering_state.purge_strays();
+    pg.recovery_finisher = nullptr;
+  } else {
+    DEBUGDPP("stale recovery finsher", pg);
+  }
 }
 }

@@ -225,7 +225,7 @@ bool BackfillState::Enqueuing::should_rescan_primary(
   const BackfillInterval& backfill_info) const
 {
   return backfill_info.begin <= earliest_peer_backfill(peer_backfill_info) &&
-	 !backfill_info.extends_to_end();
+	 !backfill_info.extends_to_end() && backfill_info.empty();
 }
 
 void BackfillState::Enqueuing::trim_backfilled_object_from_intervals(
@@ -266,6 +266,7 @@ BackfillState::Enqueuing::update_on_peers(const hobject_t& check)
   logger().debug("{}: check={}", __func__, check);
   const auto& primary_bi = backfill_state().backfill_info;
   result_t result { {}, primary_bi.begin };
+  std::map<hobject_t, std::pair<eversion_t, std::vector<pg_shard_t>>> backfills;
 
   for (const auto& bt : peering_state().get_backfill_targets()) {
     const auto& peer_bi = backfill_state().peer_backfill_info.at(bt);
@@ -273,9 +274,13 @@ BackfillState::Enqueuing::update_on_peers(const hobject_t& check)
     // Find all check peers that have the wrong version
     if (const eversion_t& obj_v = primary_bi.objects.begin()->second;
         check == primary_bi.begin && check == peer_bi.begin) {
-      if(peer_bi.objects.begin()->second != obj_v &&
-          backfill_state().progress_tracker->enqueue_push(primary_bi.begin)) {
-        backfill_listener().enqueue_push(primary_bi.begin, obj_v);
+      if (peer_bi.objects.begin()->second != obj_v) {
+	std::ignore = backfill_state().progress_tracker->enqueue_push(
+	  primary_bi.begin);
+	auto &[v, peers] = backfills[primary_bi.begin];
+	assert(v == obj_v || v == eversion_t());
+	v = obj_v;
+	peers.push_back(bt);
       } else {
         // it's fine, keep it! OR already recovering
       }
@@ -284,11 +289,21 @@ BackfillState::Enqueuing::update_on_peers(const hobject_t& check)
       // Only include peers that we've caught up to their backfill line
       // otherwise, they only appear to be missing this object
       // because their peer_bi.begin > backfill_info.begin.
-      if (primary_bi.begin > peering_state().get_peer_last_backfill(bt) &&
-          backfill_state().progress_tracker->enqueue_push(primary_bi.begin)) {
-        backfill_listener().enqueue_push(primary_bi.begin, obj_v);
+      if (primary_bi.begin > peering_state().get_peer_last_backfill(bt)) {
+	std::ignore = backfill_state().progress_tracker->enqueue_push(
+	  primary_bi.begin);
+	auto &[v, peers] = backfills[primary_bi.begin];
+	assert(v == obj_v || v == eversion_t());
+	v = obj_v;
+	peers.push_back(bt);
       }
     }
+  }
+  for (auto &backfill : backfills) {
+    auto &soid = backfill.first;
+    auto &obj_v = backfill.second.first;
+    auto &peers = backfill.second.second;
+    backfill_listener().enqueue_push(soid, obj_v, peers);
   }
   return result;
 }
@@ -327,15 +342,28 @@ BackfillState::Enqueuing::Enqueuing(my_context ctx)
   }
   trim_backfill_infos();
 
-  while (!all_emptied(primary_bi, backfill_state().peer_backfill_info)) {
+  if (should_rescan_primary(backfill_state().peer_backfill_info,
+				   primary_bi)) {
+    // need to grab one another chunk of the object namespace and restart
+    // the queueing.
+    logger().debug("{}: reached end for current local chunk", __func__);
+    post_event(RequestPrimaryScanning{});
+    return;
+  }
+
+  do {
     if (!backfill_listener().budget_available()) {
       post_event(RequestWaiting{});
       return;
     } else if (should_rescan_replicas(backfill_state().peer_backfill_info,
-                                      primary_bi)) {
+				      primary_bi)) {
       // Count simultaneous scans as a single op and let those complete
       post_event(RequestReplicasScanning{});
       return;
+    }
+
+    if (all_emptied(primary_bi, backfill_state().peer_backfill_info)) {
+      break;
     }
     // Get object within set of peers to operate on and the set of targets
     // for which that object applies.
@@ -355,30 +383,23 @@ BackfillState::Enqueuing::Enqueuing(my_context ctx)
       trim_backfilled_object_from_intervals(std::move(result),
 					    backfill_state().last_backfill_started,
 					    backfill_state().peer_backfill_info);
-      primary_bi.pop_front();
+      if (!primary_bi.empty()) {
+	primary_bi.pop_front();
+      }
     }
     backfill_listener().maybe_flush();
-  }
+  } while (!all_emptied(primary_bi, backfill_state().peer_backfill_info));
 
-  if (should_rescan_primary(backfill_state().peer_backfill_info,
-                            primary_bi)) {
-    // need to grab one another chunk of the object namespace and restart
-    // the queueing.
-    logger().debug("{}: reached end for current local chunk",
-                   __func__);
-    post_event(RequestPrimaryScanning{});
-  } else {
-    if (backfill_state().progress_tracker->tracked_objects_completed()
-	&& Enqueuing::all_enqueued(peering_state(),
-				   backfill_state().backfill_info,
-				   backfill_state().peer_backfill_info)) {
-      backfill_state().last_backfill_started = hobject_t::get_max();
-      backfill_listener().update_peers_last_backfill(hobject_t::get_max());
-    }
-    logger().debug("{}: reached end for both local and all peers "
-                   "but still has in-flight operations", __func__);
-    post_event(RequestWaiting{});
+  if (backfill_state().progress_tracker->tracked_objects_completed()
+      && Enqueuing::all_enqueued(peering_state(),
+				 backfill_state().backfill_info,
+				 backfill_state().peer_backfill_info)) {
+    backfill_state().last_backfill_started = hobject_t::get_max();
+    backfill_listener().update_peers_last_backfill(hobject_t::get_max());
   }
+  logger().debug("{}: reached end for both local and all peers "
+		 "but still has in-flight operations", __func__);
+  post_event(RequestWaiting{});
 }
 
 // -- PrimaryScanning
@@ -403,7 +424,7 @@ BackfillState::PrimaryScanning::react(ObjectPushed evt)
 {
   logger().debug("PrimaryScanning::react() on ObjectPushed; evt.object={}",
                  evt.object);
-  backfill_state().progress_tracker->complete_to(evt.object, evt.stat);
+  backfill_state().progress_tracker->complete_to(evt.object, evt.stat, true);
   return discard_event();
 }
 
@@ -480,7 +501,7 @@ BackfillState::ReplicasScanning::react(ObjectPushed evt)
 {
   logger().debug("ReplicasScanning::react() on ObjectPushed; evt.object={}",
                  evt.object);
-  backfill_state().progress_tracker->complete_to(evt.object, evt.stat);
+  backfill_state().progress_tracker->complete_to(evt.object, evt.stat, true);
   return discard_event();
 }
 
@@ -496,16 +517,8 @@ BackfillState::Waiting::react(ObjectPushed evt)
 {
   logger().debug("Waiting::react() on ObjectPushed; evt.object={}",
                  evt.object);
-  backfill_state().progress_tracker->complete_to(evt.object, evt.stat);
-  if (!Enqueuing::all_enqueued(peering_state(),
-                               backfill_state().backfill_info,
-                               backfill_state().peer_backfill_info)) {
-    return transit<Enqueuing>();
-  } else {
-    // we still have something to wait on
-    logger().debug("Waiting::react() on ObjectPushed; still waiting");
-    return discard_event();
-  }
+  backfill_state().progress_tracker->complete_to(evt.object, evt.stat, false);
+  return transit<Enqueuing>();;
 }
 
 // -- Done
@@ -559,7 +572,8 @@ void BackfillState::ProgressTracker::enqueue_drop(const hobject_t& obj)
 
 void BackfillState::ProgressTracker::complete_to(
   const hobject_t& obj,
-  const pg_stat_t& stats)
+  const pg_stat_t& stats,
+  bool may_push_to_max)
 {
   logger().debug("{}: obj={}",
                  __func__, obj);
@@ -570,6 +584,7 @@ void BackfillState::ProgressTracker::complete_to(
   } else {
     ceph_abort_msg("completing untracked object shall not happen");
   }
+  auto new_last_backfill = peering_state().earliest_backfill();
   for (auto it = std::begin(registry);
        it != std::end(registry) &&
          it->second.stage != op_stage_t::enqueued_push;
@@ -579,15 +594,18 @@ void BackfillState::ProgressTracker::complete_to(
     peering_state().update_complete_backfill_object_stats(
       soid,
       *item.stats);
+    assert(soid > new_last_backfill);
+    new_last_backfill = soid;
   }
-  if (Enqueuing::all_enqueued(peering_state(),
+  if (may_push_to_max &&
+      Enqueuing::all_enqueued(peering_state(),
                               backfill_state().backfill_info,
                               backfill_state().peer_backfill_info) &&
       tracked_objects_completed()) {
     backfill_state().last_backfill_started = hobject_t::get_max();
     backfill_listener().update_peers_last_backfill(hobject_t::get_max());
   } else {
-    backfill_listener().update_peers_last_backfill(obj);
+    backfill_listener().update_peers_last_backfill(new_last_backfill);
   }
 }
 

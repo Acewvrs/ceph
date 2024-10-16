@@ -96,7 +96,7 @@ Current Members
  * Mike Perez <miperez@redhat.com>
  * Myoungwon Oh <myoungwon.oh@samsung.com>
  * Neha Ojha <nojha@redhat.com>
- * Patrick Donnelly <pdonnell@redhat.com>
+ * Patrick Donnelly <pdonnell@ibm.com>
  * Sam Just <sjust@redhat.com>
  * Vikhyat Umrao <vikhyat@redhat.com>
  * Xie Xingguo <xie.xingguo@zte.com.cn>
@@ -104,6 +104,17 @@ Current Members
  * Yingxin Cheng <yingxin.cheng@intel.com>
  * Yuri Weinstein <yweinste@redhat.com>
  * Zac Dover <zac.dover@proton.me>
+ * Laura Flores <lflores@redhat.com>
+ * Venky Shankar <vshankar@redhat.com>
+ * Guillaume Abrioux <gabrioux@redhat.com>
+ * Anthony D'Atri <anthony.datri@gmail.com>
+ * Joseph Mundackal <jmundackal@bloomberg.net>
+ * Gaurav Sitlani <gsitlani@ibm.com>
+ * Afreen Misbah <afreen@ibm.com>
+ * Radoslaw Zarzynski <rzarzyns@redhat.com>
+ * Matan Breizman <mbreizma@redhat.com>
+ * Yaarit Hatuka <yhatuka@ibm.com>
+ * Adam C. Emerson <aemerson@redhat.com>
 
 .. _ctl:
 
