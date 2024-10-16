@@ -1011,13 +1011,17 @@ bool MgrMonitor::preprocess_command(MonOpRequestRef op)
     }
     f->flush(rdata);
   } else if (prefix == "mgr module ls") {
-   } else if (prefix == "mgr module ls") {
     if (f) {
+      // Create a mapping from module names to ModuleInfo pointers
+      std::map<std::string, const MgrMap::ModuleInfo*> module_info_map;
+      for (const auto& mi : map.available_modules) {
+        module_info_map[mi.name] = &mi;
+      }
       f->open_object_section("modules");
       {
         f->open_array_section("always_on_modules");
         for (auto& p : map.get_always_on_modules()) {
-          p.dump(f.get());
+          f->dump_string("module", p);
         }
         f->close_section();
         f->open_array_section("enabled_modules");
@@ -1026,7 +1030,7 @@ bool MgrMonitor::preprocess_command(MonOpRequestRef op)
             continue;
           // We only show the name for enabled modules.  The any errors
           // etc will show up as a health checks.
-          p.dump(f.get());
+          f->dump_string("module", p);
         }
         f->close_section();
         f->open_array_section("disabled_modules");
