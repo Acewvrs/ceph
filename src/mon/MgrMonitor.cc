@@ -1011,7 +1011,7 @@ bool MgrMonitor::preprocess_command(MonOpRequestRef op)
     }
     f->flush(rdata);
 } else if (prefix == "mgr module ls") {
-    if (f) {
+    if (!f) f.reset(Formatter::create(format, "json-pretty", "json-pretty"));
       // Create a mapping from module names to ModuleInfo pointers
       std::unordered_map<std::string, const MgrMap::ModuleInfo*> module_info_map;
       for (const auto& mi : map.available_modules) {
@@ -1033,12 +1033,12 @@ bool MgrMonitor::preprocess_command(MonOpRequestRef op)
         // enabled_modules
         f->open_array_section("enabled_modules");
         for (const auto& module_name : map.modules) {
-          if (map.get_always_on_modules().count(module_name) > 0)
-            continue;
-          auto it = module_info_map.find(module_name);
-          if (it != module_info_map.end()) {
+          if (map.get_always_on_modules().count(module_name) == 0)
+            auto it = module_info_map.find(module_name);
+            if (it != module_info_map.end()) {
             it->second->dump(f.get());
-          } 
+            } 
+          }
         }
         f->close_section();
 
@@ -1092,17 +1092,15 @@ bool MgrMonitor::preprocess_command(MonOpRequestRef op)
     f->close_section();
     f->flush(rdata);
   } else if (prefix == "mgr metadata") {
-    if (!f) {
-      f.reset(Formatter::create(format, "json-pretty", "json-pretty"));
-    }
+    if (!f) f.reset(Formatter::create(format, "json-pretty", "json-pretty"));
     string name;
     cmd_getval(cmdmap, "who", name);
-    if (name.size() > 0 && !map.have_name(name)) {
+    if (!name.empty() && !map.have_name(name)) {
       ss << "mgr." << name << " does not exist";
       r = -ENOENT;
       goto reply;
     }
-    if (name.size()) {
+    if (!name.empty()) {
       f->open_object_section("mgr_metadata");
       f->dump_string("name", name);
       r = dump_metadata(name, f.get(), &ss);
@@ -1110,23 +1108,16 @@ bool MgrMonitor::preprocess_command(MonOpRequestRef op)
         goto reply;
       f->close_section();
     } else {
-      r = 0;
       f->open_array_section("mgr_metadata");
       for (auto& i : map.get_all_names()) {
 	f->open_object_section("mgr");
 	f->dump_string("name", i);
-	r = dump_metadata(i, f.get(), NULL);
-	if (r == -EINVAL || r == -ENOENT) {
+	r = dump_metadata(i, f.get(), nullptr);
+	if (r < 0 && r!= -EINVAL && r != -ENOENT) goto reply; 
 	  // Drop error, continue to get other daemons' metadata
-	  dout(4) << "No metadata for mgr." << i << dendl;
-	  r = 0;
-	} else if (r < 0) {
-	  // Unexpected error
-	  goto reply;
-	}
-	f->close_section();
-      }
-      f->close_section();
+	    f->close_section();
+    }
+    f->close_section();
     }
     f->flush(rdata);
   } else if (prefix == "mgr versions") {
