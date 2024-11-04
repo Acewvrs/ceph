@@ -1013,7 +1013,7 @@ bool MgrMonitor::preprocess_command(MonOpRequestRef op)
   } else if (prefix == "mgr stretch") {
      if (f) {
       if (mon.osdmon()->osdmap.get_num_osds() > 0) {
-        p.dump(mon.osdmon()->osdmon.stretch_mode_enabled);
+        mon.osdmon()->osdmap.dump(f.get());
       }
       f->open_object_section("modules");
       {
